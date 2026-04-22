@@ -43,10 +43,10 @@ const CORNER_RADIUS: f64 = 3.0;
 const BORDER_WIDTH: f64 = 1.0;
 const CONTENT_INSET: f64 = 2.0;
 const FONT_SIZE: f64 = 12.0;
-const MAX_APP_ICONS: usize = 3;
-const APP_ICON_SIZE: f64 = 14.0;
-const APP_ICON_GROUP_PADDING_X: f64 = 1.0;
-const APP_ICON_GROUP_PADDING_Y: f64 = 0.5;
+const MAX_APP_ICONS: usize = 5;
+const APP_ICON_SIZE: f64 = 17.0;
+const APP_ICON_GROUP_PADDING_X: f64 = 0.0;
+const APP_ICON_GROUP_PADDING_Y: f64 = 0.0;
 const APP_ICON_GAP: f64 = 0.0;
 
 #[derive(Debug, Clone, Copy)]
@@ -863,7 +863,7 @@ fn build_layout(
     inactive_attrs: &NSDictionary<NSAttributedStringKey, AnyObject>,
 ) -> MenuIconLayout {
     let mut total_width = 0.0;
-    let total_height = CELL_HEIGHT;
+    let total_height = CELL_HEIGHT.max(APP_ICON_SIZE + APP_ICON_GROUP_PADDING_Y * 2.0);
 
     let mut workspaces = Vec::with_capacity(inputs.len());
     for input in inputs.iter() {
@@ -940,7 +940,7 @@ fn build_layout(
                 let bg_x = total_width + CELL_SPACING;
                 total_width = bg_x + width;
                 Some(AppIconGroupRenderData {
-                    bg_rect: CGRect::new(CGPoint::new(bg_x, bg_y), CGSize::new(width, CELL_HEIGHT)),
+                    bg_rect: CGRect::new(CGPoint::new(bg_x, bg_y), CGSize::new(width, total_height)),
                     icons,
                 })
             }
@@ -1150,18 +1150,6 @@ define_class!(
                     if let Some(app_icon_group) = &workspace.app_icon_group {
                         let rect = app_icon_group.bg_rect;
                         let bg_y = rect.origin.y + y_offset;
-                        add_rounded_rect(
-                            cg,
-                            rect.origin.x,
-                            bg_y,
-                            rect.size.width,
-                            rect.size.height,
-                            CORNER_RADIUS,
-                        );
-                        CGContext::set_rgb_stroke_color(Some(cg), 1.0, 1.0, 1.0, 1.0);
-                        CGContext::set_line_width(Some(cg), BORDER_WIDTH);
-                        CGContext::stroke_path(Some(cg));
-
                         for (idx, icon) in app_icon_group.icons.iter().enumerate() {
                             let icon_rect = CGRect::new(
                                 CGPoint::new(
