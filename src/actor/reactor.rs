@@ -316,6 +316,7 @@ pub struct Reactor {
     pending_space_change_manager: managers::PendingSpaceChangeManager,
     active_spaces: HashSet<SpaceId>,
     pub animation_tx: Option<AnimationSender>,
+    pub todo_floated_windows: HashSet<WindowId>,
 }
 
 impl Reactor {
@@ -436,6 +437,7 @@ impl Reactor {
             },
             active_spaces: HashSet::default(),
             animation_tx: None,
+            todo_floated_windows: HashSet::default(),
         };
         reactor
     }
@@ -1776,6 +1778,15 @@ impl Reactor {
                         target_frame,
                     },
                 );
+            }
+            Event::Command(Command::Reactor(ReactorCommand::SetTodoApp { app_id, app_name })) => {
+                self.handle_set_todo_app(app_id, app_name);
+            }
+            Event::Command(Command::Reactor(ReactorCommand::ToggleTodoMode)) => {
+                self.handle_toggle_todo_mode();
+            }
+            Event::Command(Command::Reactor(ReactorCommand::ReflowTodo)) => {
+                self.handle_reflow_todo();
             }
             _ => (),
         }
@@ -3250,9 +3261,24 @@ impl Reactor {
         }
     }
 
+    /// Returns true if `wid` belongs to the configured todo-mode app while todo mode is on.
+    /// Used to relax workspace-scoped checks so the pinned sidebar window stays
+    /// interactive on every workspace.
+    pub(crate) fn is_todo_window(&self, wid: WindowId) -> bool {
+        let todo = &self.config.settings.todo_mode;
+        if !todo.enabled {
+            return false;
+        }
+        let Some(app_id) = todo.app_id.as_deref() else {
+            return false;
+        };
+        self.app_manager.apps.get(&wid.pid).and_then(|a| a.info.bundle_id.as_deref())
+            == Some(app_id)
+    }
+
     // Returns true if the window should be raised on mouse over considering
     // active workspace membership and potential occlusion of floating windows above it.
-    pub(crate) fn should_raise_on_mouse_over(&self, wid: WindowId) -> bool {
+    fn should_raise_on_mouse_over(&self, wid: WindowId) -> bool {
         let Some(window) = self.state.windows.window(wid) else {
             return false;
         };
@@ -3281,7 +3307,8 @@ impl Reactor {
             &self.state.windows,
             space,
             wid,
-        ) {
+        ) && !self.is_todo_window(wid)
+        {
             trace!("Ignoring mouse over window {:?} - not in active workspace", wid);
             return false;
         }
@@ -3576,6 +3603,18 @@ impl Reactor {
             return;
         }
 
+        // Todo-mode app is pinned visually on every workspace via the sidebar, so
+        // activating it must not pull the user back to wherever its virtual workspace
+        // assignment happens to live.
+        let todo = &self.config.settings.todo_mode;
+        if todo.enabled && todo.app_id.as_deref() == Some(bundle_id_str.as_str()) {
+            debug!(
+                "App {} is the todo app; suppressing auto workspace switch on activation",
+                bundle_id_str
+            );
+            return;
+        }
+
         debug!(
             "App activation detected: {} (pid: {}), checking for workspace switch",
             bundle_id_str, pid
@@ -3600,6 +3639,97 @@ impl Reactor {
         };
 
         self.maybe_auto_switch_to_window_workspace(pid, app_window_id, window_space);
+    }
+
+    fn handle_set_todo_app(&mut self, app_id: String, app_name: String) {
+        let old_app_id = self.config.settings.todo_mode.app_id.clone();
+        self.config.settings.todo_mode.app_id = Some(app_id);
+        self.config.settings.todo_mode.app_name = Some(app_name);
+        if old_app_id != self.config.settings.todo_mode.app_id {
+            self.sync_todo_app_floating_state();
+        }
+        let _ = self.update_layout_or_warn(false, false);
+        self.maybe_send_menu_update();
+    }
+
+    fn handle_toggle_todo_mode(&mut self) {
+        self.config.settings.todo_mode.enabled = !self.config.settings.todo_mode.enabled;
+        self.sync_todo_app_floating_state();
+        let _ = self.update_layout_or_warn(false, false);
+        self.maybe_send_menu_update();
+    }
+
+    fn handle_reflow_todo(&mut self) {
+        self.sync_todo_app_floating_state();
+        let _ = self.update_layout_or_warn(false, false);
+    }
+
+    fn sync_todo_app_floating_state(&mut self) {
+        let todo = &self.config.settings.todo_mode;
+        let should_float = todo.enabled && todo.app_id.is_some();
+        let app_id = todo.app_id.clone();
+
+        if !should_float {
+            // Unfloat all todo-floated windows
+            let to_unfloat: Vec<WindowId> = self.todo_floated_windows.iter().copied().collect();
+            for wid in to_unfloat {
+                let space = self.space_state.iter_known_spaces().find(|space| {
+                    self.layout_manager
+                        .layout_engine
+                        .virtual_workspace_manager()
+                        .workspace_for_window(&self.state.windows, *space, wid)
+                        .is_some()
+                });
+                if let Some(space) = space {
+                    self.layout_manager.layout_engine.unfloat_window(
+                        &self.state.windows,
+                        space,
+                        wid,
+                    );
+                }
+            }
+            self.todo_floated_windows.clear();
+            return;
+        }
+
+        let Some(app_id) = app_id else { return };
+
+        // Float windows belonging to the todo app that aren't already floated
+        let all_windows: Vec<WindowId> =
+            self.state.windows.iter_windows().map(|(wid, _)| wid).collect();
+
+        let windows_to_float: Vec<(WindowId, SpaceId)> = all_windows
+            .into_iter()
+            .filter(|&wid| {
+                if self.todo_floated_windows.contains(&wid) {
+                    return false;
+                }
+                if self.layout_manager.layout_engine.is_window_floating(wid) {
+                    return false;
+                }
+                let bundle_id =
+                    self.app_manager.apps.get(&wid.pid).and_then(|a| a.info.bundle_id.as_deref());
+                if bundle_id != Some(app_id.as_str()) {
+                    return false;
+                }
+                true
+            })
+            .filter_map(|wid| {
+                let space = self.space_state.iter_known_spaces().find(|space| {
+                    self.layout_manager
+                        .layout_engine
+                        .virtual_workspace_manager()
+                        .workspace_for_window(&self.state.windows, *space, wid)
+                        .is_some()
+                })?;
+                Some((wid, space))
+            })
+            .collect();
+
+        for (wid, space) in windows_to_float {
+            self.layout_manager.layout_engine.float_window(space, wid);
+            self.todo_floated_windows.insert(wid);
+        }
     }
 
     fn maybe_auto_switch_to_window_workspace(

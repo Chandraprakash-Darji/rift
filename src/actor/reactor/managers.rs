@@ -1,4 +1,4 @@
-use objc2_core_foundation::{CGPoint, CGRect};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use tracing::trace;
 
 use super::replay::Record;
@@ -217,9 +217,14 @@ impl LayoutManager {
             .filter_map(|screen| screen.space)
             .filter(|space| reactor.is_space_active(*space))
             .count();
+
+        let todo_enabled = reactor.config.settings.todo_mode.enabled;
+        let todo_app_id = reactor.config.settings.todo_mode.app_id.clone();
+        let todo_sidebar_width = reactor.config.settings.todo_mode.sidebar_width;
+
         let mut layout_result = LayoutResult::new();
 
-        for screen in screens {
+        for (screen_index, screen) in screens.into_iter().enumerate() {
             let Some(space) = screen.space else {
                 continue;
             };
@@ -237,11 +242,25 @@ impl LayoutManager {
                 .layout_manager
                 .layout_engine
                 .update_space_display(space, display_uuid_opt.clone());
+
+            // Primary screen (index 0) gets shrunk when todo mode is active
+            let is_primary = screen_index == 0;
+            let shrink_for_todo = todo_enabled && todo_app_id.is_some() && is_primary;
+            let tiling_frame = if shrink_for_todo {
+                let usable_width = (screen.frame.size.width - todo_sidebar_width).max(100.0);
+                CGRect::new(
+                    screen.frame.origin,
+                    CGSize::new(usable_width, screen.frame.size.height),
+                )
+            } else {
+                screen.frame.clone()
+            };
+
             let mut layout =
                 reactor.layout_manager.layout_engine.calculate_layout_with_virtual_workspaces(
                     &reactor.state.windows,
                     space,
-                    screen.frame.clone(),
+                    tiling_frame,
                     &gaps,
                     reactor.config.settings.ui.stack_line.thickness(),
                     reactor.config.settings.ui.stack_line.horiz_placement,
@@ -249,6 +268,36 @@ impl LayoutManager {
                     |wid| reactor.state.windows.window(wid).map(|w| w.frame_monotonic),
                     &all_screen_frames,
                 );
+
+            // Pin todo windows to the sidebar area on the right of the primary screen.
+            // Apply all four outer gaps for symmetric padding.
+            if shrink_for_todo {
+                if let Some(ref app_id) = todo_app_id {
+                    let sidebar_x = screen.frame.origin.x + screen.frame.size.width
+                        - todo_sidebar_width
+                        + gaps.outer.left;
+                    let sidebar_width_padded =
+                        (todo_sidebar_width - gaps.outer.left - gaps.outer.right).max(50.0);
+                    let sidebar_height_padded =
+                        (screen.frame.size.height - gaps.outer.top - gaps.outer.bottom).max(50.0);
+                    let sidebar_rect = CGRect::new(
+                        CGPoint::new(sidebar_x, screen.frame.origin.y + gaps.outer.top),
+                        CGSize::new(sidebar_width_padded, sidebar_height_padded),
+                    );
+                    for (wid, rect) in layout.iter_mut() {
+                        let is_todo = reactor
+                            .app_manager
+                            .apps
+                            .get(&wid.pid)
+                            .and_then(|a| a.info.bundle_id.as_deref())
+                            == Some(app_id.as_str());
+                        if is_todo {
+                            *rect = sidebar_rect;
+                        }
+                    }
+                }
+            }
+
             if active_space_count > 1
                 && reactor.layout_manager.layout_engine.active_layout_mode_at(space)
                     == LayoutMode::Scrolling

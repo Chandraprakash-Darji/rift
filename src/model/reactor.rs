@@ -72,6 +72,12 @@ pub enum ReactorCommand {
         selector: DisplaySelector,
         window_id: Option<u32>,
     },
+    SetTodoApp {
+        app_id: String,
+        app_name: String,
+    },
+    ToggleTodoMode,
+    ReflowTodo,
 }
 
 #[derive(Debug, Clone)]

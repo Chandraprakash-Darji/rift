@@ -71,6 +71,9 @@ pub enum WmCmd {
     ShowMissionControlCurrent,
     DismissMissionControl,
     CloseWindow,
+
+    ToggleTodoMode,
+    ReflowTodo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -370,6 +373,16 @@ impl WmController {
             }
             Command(Wm(Exec(cmd))) => {
                 self.exec_cmd(cmd);
+            }
+            Command(Wm(ToggleTodoMode)) => {
+                self.events_tx.send(reactor::Event::Command(reactor::Command::Reactor(
+                    reactor::ReactorCommand::ToggleTodoMode,
+                )));
+            }
+            Command(Wm(ReflowTodo)) => {
+                self.events_tx.send(reactor::Event::Command(reactor::Command::Reactor(
+                    reactor::ReactorCommand::ReflowTodo,
+                )));
             }
             Command(ReactorCommand(cmd)) => {
                 self.events_tx.send(reactor::Event::Command(cmd));

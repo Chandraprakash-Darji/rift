@@ -27,8 +27,8 @@ use tracing::debug;
 use crate::actor::reactor::{Command as ReactorTopCommand, ReactorCommand};
 use crate::actor::wm_controller::{WmCmd, WmCommand};
 use crate::common::config::{
-    ActiveWorkspaceLabel, LayoutMode, MenuBarDisplayMode, MenuBarSettings, WorkspaceDisplayStyle,
-    WorkspaceSelector, restore_file,
+    ActiveWorkspaceLabel, LayoutMode, MenuBarDisplayMode, MenuBarSettings, TodoModeSettings,
+    WorkspaceDisplayStyle, WorkspaceSelector, restore_file,
 };
 use crate::layout_engine::{LayoutCommand, LayoutEngine, RestoreScope, RestoreSource};
 use crate::model::VirtualWorkspaceId;
@@ -68,6 +68,12 @@ pub enum MenuAction {
     OpenConfig,
     ReloadConfig,
     QuitRift,
+    SetTodoApp {
+        app_id: String,
+        app_name: String,
+    },
+    ToggleTodoMode,
+    ReflowTodo,
 }
 
 pub struct MenuIcon {
@@ -89,6 +95,7 @@ impl MenuIcon {
         let status_item = status_bar.statusItemWithLength(NSVariableStatusItemLength);
         let view = MenuIconView::new(mtm);
         let menu_handler = MenuActionHandler::new(mtm, action_tx);
+        let default_todo = TodoModeSettings::default();
         let menu = build_status_menu(
             mtm,
             &menu_handler,
@@ -98,6 +105,8 @@ impl MenuIcon {
             &[],
             &MenuShortcuts::default(),
             layout_folder,
+            &default_todo,
+            None,
         );
         status_item.setMenu(Some(&menu));
         if let Some(btn) = status_item.button(mtm) {
@@ -125,7 +134,12 @@ impl MenuIcon {
         _windows: &[WindowData],
         settings: &MenuBarSettings,
         hotkeys: &[(Hotkey, WmCommand)],
+        todo_settings: &TodoModeSettings,
+        focused_app: Option<&(String, String)>,
     ) {
+        // Update the handler's stored focused app so it can construct SetTodoApp actions.
+        *self.menu_handler.ivars().focused_app.borrow_mut() = focused_app.cloned();
+
         let active_layout = workspaces
             .iter()
             .find(|w| w.is_active)
@@ -140,6 +154,8 @@ impl MenuIcon {
             workspaces,
             &shortcuts,
             &settings.resolved_layout_folder(),
+            todo_settings,
+            focused_app,
         );
         self.status_item.setMenu(Some(&menu));
         self.menu = menu;
@@ -415,6 +431,8 @@ fn build_status_menu(
     workspaces: &[WorkspaceData],
     shortcuts: &MenuShortcuts,
     layout_folder: &Path,
+    todo_settings: &TodoModeSettings,
+    focused_app: Option<&(String, String)>,
 ) -> Retained<NSMenu> {
     let title = NSString::from_str("Rift");
     let menu: Retained<NSMenu> = unsafe { msg_send![NSMenu::alloc(mtm), initWithTitle: &*title] };
@@ -602,6 +620,65 @@ fn build_status_menu(
         None,
     ));
 
+    // Todo submenu
+    let todo_item = make_menu_item(mtm, "Todo", None, None, None, None, None);
+    let todo_submenu_title = NSString::from_str("Todo");
+    let todo_submenu: Retained<NSMenu> =
+        unsafe { msg_send![NSMenu::alloc(mtm), initWithTitle: &*todo_submenu_title] };
+
+    let set_todo_label = match (focused_app, todo_settings.app_name.as_deref()) {
+        (Some((_, name)), _) => format!("Use {} as Todo App", name),
+        (None, Some(current)) => format!("Todo App: {}", current),
+        (None, None) => "Set Todo App".to_string(),
+    };
+    let set_todo_item = make_menu_item(
+        mtm,
+        &set_todo_label,
+        Some(sel!(onSetTodoApp:)),
+        Some(handler),
+        None,
+        None,
+        None,
+    );
+    if focused_app.is_none() {
+        set_todo_item.setEnabled(false);
+    }
+    todo_submenu.addItem(&set_todo_item);
+
+    let toggle_label = if let Some(name) = todo_settings.app_name.as_deref() {
+        format!("Todo Mode ({})", name)
+    } else {
+        "Todo Mode".to_string()
+    };
+    let toggle_todo_item = make_menu_item(
+        mtm,
+        &toggle_label,
+        Some(sel!(onToggleTodoMode:)),
+        Some(handler),
+        Some(todo_settings.enabled),
+        shortcuts.toggle_todo_mode.as_ref(),
+        None,
+    );
+    if todo_settings.app_id.is_none() {
+        toggle_todo_item.setEnabled(false);
+    }
+    todo_submenu.addItem(&toggle_todo_item);
+
+    if todo_settings.enabled {
+        todo_submenu.addItem(&make_menu_item(
+            mtm,
+            "Reflow Todo",
+            Some(sel!(onReflowTodo:)),
+            Some(handler),
+            None,
+            shortcuts.reflow_todo.as_ref(),
+            None,
+        ));
+    }
+
+    todo_item.setSubmenu(Some(&todo_submenu));
+    menu.addItem(&todo_item);
+
     add_separator(&menu);
     menu.addItem(&make_menu_item(
         mtm,
@@ -690,6 +767,8 @@ struct MenuShortcuts {
     switch_workspace_by_index: HashMap<usize, Hotkey>,
     switch_workspace_by_name: HashMap<String, Hotkey>,
     reload_config: Option<Hotkey>,
+    toggle_todo_mode: Option<Hotkey>,
+    reflow_todo: Option<Hotkey>,
 }
 
 impl MenuShortcuts {
@@ -743,7 +822,18 @@ impl MenuShortcuts {
                 WmCommand::Wm(WmCmd::ReloadConfig) => {
                     out.reload_config.get_or_insert_with(|| hotkey.clone());
                 }
-
+                WmCommand::Wm(WmCmd::ToggleTodoMode)
+                | WmCommand::ReactorCommand(ReactorTopCommand::Reactor(
+                    ReactorCommand::ToggleTodoMode,
+                )) => {
+                    out.toggle_todo_mode.get_or_insert_with(|| hotkey.clone());
+                }
+                WmCommand::Wm(WmCmd::ReflowTodo)
+                | WmCommand::ReactorCommand(ReactorTopCommand::Reactor(
+                    ReactorCommand::ReflowTodo,
+                )) => {
+                    out.reflow_todo.get_or_insert_with(|| hotkey.clone());
+                }
                 _ => {}
             }
         }
@@ -825,6 +915,8 @@ struct MenuActionHandlerIvars {
     action_tx: UnboundedSender<MenuAction>,
     layout_files: RefCell<Vec<PathBuf>>,
     layout_folder: RefCell<PathBuf>,
+    /// (bundle_id, display_name) of the currently focused app, updated each menu rebuild.
+    focused_app: RefCell<Option<(String, String)>>,
 }
 
 impl MenuActionHandler {
@@ -833,6 +925,7 @@ impl MenuActionHandler {
             action_tx,
             layout_files: RefCell::new(Vec::new()),
             layout_folder: RefCell::new(PathBuf::new()),
+            focused_app: RefCell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -1081,6 +1174,24 @@ define_class!(
         #[unsafe(method(onQuitRift:))]
         fn on_quit_rift(&self, _sender: Option<&AnyObject>) {
             self.emit(MenuAction::QuitRift);
+        }
+
+        #[unsafe(method(onSetTodoApp:))]
+        fn on_set_todo_app(&self, _sender: Option<&AnyObject>) {
+            let focused = self.ivars().focused_app.borrow().clone();
+            if let Some((app_id, app_name)) = focused {
+                self.emit(MenuAction::SetTodoApp { app_id, app_name });
+            }
+        }
+
+        #[unsafe(method(onToggleTodoMode:))]
+        fn on_toggle_todo_mode(&self, _sender: Option<&AnyObject>) {
+            self.emit(MenuAction::ToggleTodoMode);
+        }
+
+        #[unsafe(method(onReflowTodo:))]
+        fn on_reflow_todo(&self, _sender: Option<&AnyObject>) {
+            self.emit(MenuAction::ReflowTodo);
         }
     }
 );

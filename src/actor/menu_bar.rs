@@ -7,7 +7,7 @@ use objc2::MainThreadMarker;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::actor::{config, reactor};
-use crate::common::config::{Config, ConfigCommand};
+use crate::common::config::{Config, ConfigCommand, TodoModeSettings};
 use crate::layout_engine::LayoutCommand;
 use crate::model::VirtualWorkspaceId;
 use crate::model::server::{WindowData, WorkspaceData};
@@ -23,6 +23,9 @@ pub struct Update {
     pub active_workspace_idx: Option<u64>,
     pub active_workspace: Option<VirtualWorkspaceId>,
     pub windows: Vec<WindowData>,
+    pub todo_settings: TodoModeSettings,
+    /// (bundle_id, display_name) of the currently focused app
+    pub focused_app: Option<(String, String)>,
 }
 
 pub enum Event {
@@ -169,6 +172,8 @@ impl Menu {
             &update.windows,
             menu_bar_settings,
             &self.config.keys,
+            &update.todo_settings,
+            update.focused_app.as_ref(),
         );
     }
 
@@ -264,6 +269,21 @@ impl Menu {
             MenuAction::QuitRift => {
                 self.reactor_tx.send(reactor::Event::Command(reactor::Command::Reactor(
                     reactor::ReactorCommand::SaveAndExit,
+                )));
+            }
+            MenuAction::SetTodoApp { app_id, app_name } => {
+                self.reactor_tx.send(reactor::Event::Command(reactor::Command::Reactor(
+                    reactor::ReactorCommand::SetTodoApp { app_id, app_name },
+                )));
+            }
+            MenuAction::ToggleTodoMode => {
+                self.reactor_tx.send(reactor::Event::Command(reactor::Command::Reactor(
+                    reactor::ReactorCommand::ToggleTodoMode,
+                )));
+            }
+            MenuAction::ReflowTodo => {
+                self.reactor_tx.send(reactor::Event::Command(reactor::Command::Reactor(
+                    reactor::ReactorCommand::ReflowTodo,
                 )));
             }
         }

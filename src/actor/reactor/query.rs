@@ -207,6 +207,14 @@ impl Reactor {
             self.layout_manager.layout_engine.active_workspace_idx(active_space);
         let windows = self.handle_windows_query(Some(active_space));
 
+        let todo_settings = self.config.settings.todo_mode.clone();
+        let focused_app = self.main_window().and_then(|wid| {
+            let app = self.app_manager.apps.get(&wid.pid)?;
+            let bundle_id = app.info.bundle_id.clone()?;
+            let app_name = app.info.localized_name.clone().unwrap_or_default();
+            Some((bundle_id, app_name))
+        });
+
         menu_tx.send(menu_bar::Event::Update(menu_bar::Update {
             active_space,
             active_space_is_activated,
@@ -214,6 +222,8 @@ impl Reactor {
             active_workspace_idx,
             active_workspace,
             windows,
+            todo_settings,
+            focused_app,
         }));
     }
 

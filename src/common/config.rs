@@ -424,6 +424,9 @@ pub struct Settings {
     /// Enable hot-reloading of the config file when it changes
     #[serde(default = "yes")]
     pub hot_reload: bool,
+
+    #[serde(default)]
+    pub todo_mode: TodoModeSettings,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default, Copy)]
@@ -519,6 +522,35 @@ impl Default for GestureSettings {
 pub struct WindowSnappingSettings {
     #[serde(default = "default_drag_swap_fraction")]
     pub drag_swap_fraction: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct TodoModeSettings {
+    #[serde(default = "no")]
+    pub enabled: bool,
+    /// Bundle ID of the app to pin as the todo sidebar
+    #[serde(default)]
+    pub app_id: Option<String>,
+    /// Display name for the todo app (shown in the menu)
+    #[serde(default)]
+    pub app_name: Option<String>,
+    /// Width of the todo sidebar in points
+    #[serde(default = "default_todo_sidebar_width")]
+    pub sidebar_width: f64,
+}
+
+fn default_todo_sidebar_width() -> f64 { 400.0 }
+
+impl Default for TodoModeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            app_id: None,
+            app_name: None,
+            sidebar_width: default_todo_sidebar_width(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]

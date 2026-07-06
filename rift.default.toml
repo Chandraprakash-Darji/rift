@@ -64,6 +64,20 @@ run_on_start = []
 # - If false, your config changes will only apply when restarting rift.
 hot_reload = true
 
+# Todo Mode
+# - Pin a chosen application (typically a todo / notes app) as a sidebar on the
+#   right of your primary display. While Todo Mode is enabled, all other tiling
+#   on the primary display treats the screen as shrunk by `sidebar_width`.
+# - Pick the app from the menu bar ("Todo" submenu) on the focused app, or set
+#   `app_id` manually here. Toggle on/off via the menu or `toggle_todo_mode`
+#   keybind; force a re-layout via `reflow_todo`.
+# - Outer top/bottom/right gaps from settings.layout.gaps are applied as padding.
+[settings.todo_mode]
+enabled = false
+# app_id = "com.culturedcode.ThingsMac"
+# app_name = "Things"
+sidebar_width = 400.0
+
 [settings.layout]
 # Layout Types:
 #   - "traditional" (i3/sway-like containers)

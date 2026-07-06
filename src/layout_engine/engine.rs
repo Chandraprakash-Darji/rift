@@ -2875,6 +2875,37 @@ impl LayoutEngine {
         }
     }
 
+    /// Float a window outside of the tiling layout (used for todo sidebar).
+    pub fn float_window(&mut self, space: SpaceId, wid: WindowId) {
+        if self.floating.is_floating(wid) {
+            return;
+        }
+        self.floating.add_active(space, wid.pid, wid);
+        if let Some((ws_id, _)) = self.workspace_and_layout(space) {
+            self.workspace_tree_mut(ws_id).remove_window(wid);
+        }
+        self.floating.add_floating(wid);
+    }
+
+    /// Unfloat a window and re-add it to the tiling layout (used when disabling todo mode).
+    pub fn unfloat_window(&mut self, window_store: &WindowStore, space: SpaceId, wid: WindowId) {
+        if !self.floating.is_floating(wid) {
+            return;
+        }
+        let assigned_workspace = self
+            .virtual_workspace_manager
+            .workspace_for_window(window_store, space, wid)
+            .or_else(|| self.virtual_workspace_manager.active_workspace(space));
+
+        if let Some(ws_id) = assigned_workspace {
+            if let Some(layout) = self.workspace_layouts.active(space, ws_id) {
+                self.workspace_tree_mut(ws_id).add_window_after_selection(layout, wid);
+            }
+        }
+        self.floating.remove_active(space, wid.pid, wid);
+        self.floating.remove_floating(wid);
+    }
+
     fn update_active_floating_windows(&mut self, window_store: &WindowStore, space: SpaceId) {
         let windows_in_workspace =
             self.virtual_workspace_manager.windows_in_active_workspace(window_store, space);
